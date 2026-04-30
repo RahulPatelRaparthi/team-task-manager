@@ -130,7 +130,7 @@ http://127.0.0.1:8000
 
 ## 🌍 Live Deployment
 
-👉 **Live URL:** [Add your Railway link here]
+https://team-task-manager-production-9dc6.up.railway.app
 
 ---
 
