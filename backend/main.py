@@ -425,3 +425,17 @@ def dashboard(
         "in_progress_tasks": in_progress_tasks,
         "overdue_tasks": overdue_tasks
     }
+
+@app.get("/")
+def home():
+    return {
+        "message": "Team Task Manager API running",
+        "docs": "/docs",
+        "features": [
+            "Authentication",
+            "Role-based access",
+            "Projects",
+            "Tasks",
+            "Dashboard"
+        ]
+    }
