@@ -2,35 +2,38 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, create_engine
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
+# ================= CONFIG =================
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./team_task_manager.db")
-SECRET_KEY = os.getenv("SECRET_KEY", "team-task-manager-secret-key")
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
+# Fix Railway postgres URL
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+connect_args = {"check_same_thread": False} if "sqlite" in DATABASE_URL else {}
 
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
-app = FastAPI(title="Team Task Manager API", version="1.0.0")
+# ================= APP =================
+app = FastAPI()
 
-# CORS FIX
+# 🔥 FINAL CORS FIX (VERY IMPORTANT)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # Allow all origins (fix for your error)
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,51 +42,47 @@ app.add_middleware(
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-
+# ================= MODELS =================
 class User(Base):
     __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
-    password = Column(String, nullable=False)
-    role = Column(String, default="Member")
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    email = Column(String, unique=True)
+    password = Column(String)
+    role = Column(String)
 
 
 class Project(Base):
     __tablename__ = "projects"
-
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False)
-    description = Column(String, default="")
-    created_by = Column(Integer, ForeignKey("users.id"))
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    description = Column(String)
+    created_by = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
 class Task(Base):
     __tablename__ = "tasks"
-
-    id = Column(Integer, primary_key=True, index=True)
-    title = Column(String, nullable=False)
-    description = Column(String, default="")
+    id = Column(Integer, primary_key=True)
+    title = Column(String)
+    description = Column(String)
     status = Column(String, default="Pending")
-    deadline = Column(DateTime, nullable=True)
-    project_id = Column(Integer, ForeignKey("projects.id"))
-    assigned_to = Column(Integer, ForeignKey("users.id"))
-    created_by = Column(Integer, ForeignKey("users.id"))
+    project_id = Column(Integer)
+    assigned_to = Column(Integer)
+    deadline = Column(DateTime)
 
 
 Base.metadata.create_all(bind=engine)
 
-
-class SignupRequest(BaseModel):
+# ================= SCHEMAS =================
+class Signup(BaseModel):
     name: str
     email: EmailStr
     password: str
-    role: str = "Member"
+    role: str
 
 
-class LoginRequest(BaseModel):
+class Login(BaseModel):
     email: EmailStr
     password: str
 
@@ -104,7 +103,7 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     status: str
 
-
+# ================= UTILS =================
 def get_db():
     db = SessionLocal()
     try:
@@ -113,308 +112,132 @@ def get_db():
         db.close()
 
 
-def hash_password(password: str):
-    return pwd_context.hash(password)
+def hash_password(p):
+    return pwd_context.hash(p)
 
 
-def verify_password(plain_password: str, hashed_password: str):
-    return pwd_context.verify(plain_password, hashed_password)
+def verify_password(p, h):
+    return pwd_context.verify(p, h)
 
 
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+def create_token(data: dict):
+    data["exp"] = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("user_id")
-
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-
+        user = db.query(User).filter(User.id == payload.get("user_id")).first()
+        if not user:
+            raise HTTPException(status_code=401)
+        return user
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401)
 
-    user = db.query(User).filter(User.id == user_id).first()
 
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found")
-
+def admin_only(user: User = Depends(get_current_user)):
+    if user.role.lower() != "admin":
+        raise HTTPException(status_code=403)
     return user
 
-
-def admin_required(current_user: User = Depends(get_current_user)):
-    if current_user.role.lower() != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only Admin can perform this action"
-        )
-    return current_user
-
-
+# ================= ROUTES =================
 @app.get("/")
 def home():
-    return {
-        "message": "Team Task Manager API running",
-        "docs": "/docs",
-        "features": [
-            "Authentication",
-            "Role-based access",
-            "Projects",
-            "Tasks",
-            "Dashboard"
-        ]
-    }
+    return {"message": "API Running 🚀"}
 
-
+# ---------- AUTH ----------
 @app.post("/signup")
-def signup(user_data: SignupRequest, db: Session = Depends(get_db)):
-    existing_user = db.query(User).filter(User.email == user_data.email).first()
-
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    if user_data.role not in ["Admin", "Member"]:
-        raise HTTPException(status_code=400, detail="Role must be Admin or Member")
+def signup(data: Signup, db: Session = Depends(get_db)):
+    if db.query(User).filter(User.email == data.email).first():
+        raise HTTPException(400, "Email exists")
 
     user = User(
-        name=user_data.name,
-        email=user_data.email,
-        password=hash_password(user_data.password),
-        role=user_data.role
+        name=data.name,
+        email=data.email,
+        password=hash_password(data.password),
+        role=data.role,
     )
 
     db.add(user)
     db.commit()
-    db.refresh(user)
-
-    return {
-        "message": "User registered successfully",
-        "user_id": user.id,
-        "role": user.role
-    }
+    return {"msg": "User created"}
 
 
 @app.post("/login")
-def login(login_data: LoginRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == login_data.email).first()
+def login(data: Login, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == data.email).first()
 
-    if not user or not verify_password(login_data.password, user.password):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user or not verify_password(data.password, user.password):
+        raise HTTPException(401, "Invalid credentials")
 
-    token = create_access_token({
-        "user_id": user.id,
-        "email": user.email,
-        "role": user.role
-    })
+    token = create_token({"user_id": user.id})
 
     return {
         "access_token": token,
-        "token_type": "bearer",
         "user": {
             "id": user.id,
             "name": user.name,
             "email": user.email,
-            "role": user.role
-        }
+            "role": user.role,
+        },
     }
 
-
+# ---------- USERS ----------
 @app.get("/users")
-def get_users(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(admin_required)
-):
-    users = db.query(User).all()
+def users(db: Session = Depends(get_db), u: User = Depends(admin_only)):
+    return db.query(User).all()
 
-    return [
-        {
-            "id": user.id,
-            "name": user.name,
-            "email": user.email,
-            "role": user.role
-        }
-        for user in users
-    ]
-
-
+# ---------- PROJECTS ----------
 @app.post("/projects")
-def create_project(
-    project_data: ProjectCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(admin_required)
-):
-    project = Project(
-        name=project_data.name,
-        description=project_data.description,
-        created_by=current_user.id
-    )
-
-    db.add(project)
+def create_project(data: ProjectCreate, db: Session = Depends(get_db), u: User = Depends(admin_only)):
+    p = Project(name=data.name, description=data.description, created_by=u.id)
+    db.add(p)
     db.commit()
-    db.refresh(project)
-
-    return {
-        "message": "Project created successfully",
-        "project": {
-            "id": project.id,
-            "name": project.name,
-            "description": project.description,
-            "created_by": project.created_by
-        }
-    }
+    return p
 
 
 @app.get("/projects")
-def get_projects(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    projects = db.query(Project).all()
+def get_projects(db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    return db.query(Project).all()
 
-    return [
-        {
-            "id": project.id,
-            "name": project.name,
-            "description": project.description,
-            "created_by": project.created_by,
-            "created_at": project.created_at
-        }
-        for project in projects
-    ]
-
-
+# ---------- TASKS ----------
 @app.post("/tasks")
-def create_task(
-    task_data: TaskCreate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(admin_required)
-):
-    project = db.query(Project).filter(Project.id == task_data.project_id).first()
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-
-    assigned_user = db.query(User).filter(User.id == task_data.assigned_to).first()
-    if not assigned_user:
-        raise HTTPException(status_code=404, detail="Assigned user not found")
-
-    task = Task(
-        title=task_data.title,
-        description=task_data.description,
-        project_id=task_data.project_id,
-        assigned_to=task_data.assigned_to,
-        deadline=task_data.deadline,
-        created_by=current_user.id
-    )
-
-    db.add(task)
+def create_task(data: TaskCreate, db: Session = Depends(get_db), u: User = Depends(admin_only)):
+    t = Task(**data.dict())
+    db.add(t)
     db.commit()
-    db.refresh(task)
-
-    return {
-        "message": "Task created successfully",
-        "task": {
-            "id": task.id,
-            "title": task.title,
-            "status": task.status,
-            "assigned_to": task.assigned_to,
-            "project_id": task.project_id
-        }
-    }
+    return t
 
 
 @app.get("/tasks")
-def get_tasks(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    if current_user.role.lower() == "admin":
-        tasks = db.query(Task).all()
-    else:
-        tasks = db.query(Task).filter(Task.assigned_to == current_user.id).all()
-
-    return [
-        {
-            "id": task.id,
-            "title": task.title,
-            "description": task.description,
-            "status": task.status,
-            "project_id": task.project_id,
-            "assigned_to": task.assigned_to,
-            "deadline": task.deadline
-        }
-        for task in tasks
-    ]
+def get_tasks(db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    if u.role.lower() == "admin":
+        return db.query(Task).all()
+    return db.query(Task).filter(Task.assigned_to == u.id).all()
 
 
-@app.put("/tasks/{task_id}")
-def update_task_status(
-    task_id: int,
-    task_update: TaskUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    allowed_status = ["Pending", "In Progress", "Done"]
-
-    if task_update.status not in allowed_status:
-        raise HTTPException(
-            status_code=400,
-            detail="Status must be Pending, In Progress, or Done"
-        )
-
-    task = db.query(Task).filter(Task.id == task_id).first()
-
+@app.put("/tasks/{id}")
+def update_task(id: int, data: TaskUpdate, db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    task = db.query(Task).filter(Task.id == id).first()
     if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(404)
 
-    if current_user.role.lower() != "admin" and task.assigned_to != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="You can update only your assigned tasks"
-        )
+    if u.role.lower() != "admin" and task.assigned_to != u.id:
+        raise HTTPException(403)
 
-    task.status = task_update.status
+    task.status = data.status
     db.commit()
-    db.refresh(task)
+    return {"msg": "Updated"}
 
-    return {
-        "message": "Task status updated successfully",
-        "task_id": task.id,
-        "new_status": task.status
-    }
-
-
+# ---------- DASHBOARD ----------
 @app.get("/dashboard")
-def dashboard(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    if current_user.role.lower() == "admin":
-        tasks = db.query(Task).all()
-    else:
-        tasks = db.query(Task).filter(Task.assigned_to == current_user.id).all()
-
-    total_tasks = len(tasks)
-    completed_tasks = len([task for task in tasks if task.status == "Done"])
-    pending_tasks = len([task for task in tasks if task.status == "Pending"])
-    in_progress_tasks = len([task for task in tasks if task.status == "In Progress"])
-
-    now = datetime.utcnow()
-    overdue_tasks = len([
-        task for task in tasks
-        if task.deadline and task.deadline < now and task.status != "Done"
-    ])
+def dashboard(db: Session = Depends(get_db), u: User = Depends(get_current_user)):
+    tasks = db.query(Task).all() if u.role.lower() == "admin" else db.query(Task).filter(Task.assigned_to == u.id).all()
 
     return {
-        "user": current_user.name,
-        "role": current_user.role,
-        "total_tasks": total_tasks,
-        "completed_tasks": completed_tasks,
-        "pending_tasks": pending_tasks,
-        "in_progress_tasks": in_progress_tasks,
-        "overdue_tasks": overdue_tasks
+        "total_tasks": len(tasks),
+        "completed_tasks": len([t for t in tasks if t.status == "Done"]),
+        "in_progress_tasks": len([t for t in tasks if t.status == "In Progress"]),
+        "overdue_tasks": len([t for t in tasks if t.deadline and t.deadline < datetime.utcnow()])
     }
