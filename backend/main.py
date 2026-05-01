@@ -170,13 +170,6 @@ def admin_required(current_user: User = Depends(get_current_user)):
 
 # ---------------- ROUTES ----------------
 
-@app.get("/")
-def home():
-    return {
-        "message": "Team Task Manager API running",
-        "docs": "/docs"
-    }
-
 
 @app.post("/signup")
 def signup(user_data: SignupRequest, db: Session = Depends(get_db)):
