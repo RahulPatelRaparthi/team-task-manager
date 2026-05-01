@@ -379,3 +379,4 @@ function Modal({ title, children, onClose }) {
 }
 
 createRoot(document.getElementById("root")).render(<App />);
+console.log("API BASE:", API_BASE);
